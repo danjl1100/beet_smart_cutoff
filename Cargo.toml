@@ -1,5 +1,5 @@
 [package]
-name = "beet_smart_playlist_length"
+name = "beet_smart_cutoff"
 version = "0.1.0"
 edition = "2021"
 
