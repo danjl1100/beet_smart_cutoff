@@ -1,46 +1,43 @@
 use anyhow::Context as _;
+use beet_command::BeetCommand;
 use clap::Parser;
 use std::{
-    io::{stdin, BufRead, Write as _},
+    io::{stdin, Write as _},
     num::NonZeroUsize,
     str::FromStr,
 };
 
-const MAX_ENTRIES: usize = 200;
-
 #[derive(clap::Parser)]
 struct Args {
-    #[clap(env)]
+    /// Path to the `beet` command from the package `beets`
+    #[clap(env, long)]
     beet_command: std::path::PathBuf,
-    #[clap(env)]
-    current_args: String,
-    #[clap(env)]
+    /// Newline separated list of filter arguments to `beet list` (excluding the date "added" filter)
+    #[clap(env, long)]
     timeless_args: String,
+    #[clap(long, default_value_t = 400)]
+    max_entries: usize,
 }
 
 fn main() -> anyhow::Result<()> {
-    let Args {
-        beet_command,
-        current_args,
-        timeless_args,
-    } = Args::parse();
+    let args = Args::parse();
+    let beets = BeetCommand::try_from(&args)?;
 
-    let beets = BeetCommand(beet_command);
+    let entries = beets.query_timeless().context("query current items")?;
 
-    let entries = beets
-        .query_current_entries(current_args)
-        .context("query current items")?;
-
-    let date_entry = select_end(&entries)?;
+    let date_entry = select_end(&entries, args.max_entries)?;
 
     if let Some(date_entry) = date_entry {
-        println!("Chose {date_entry:?}");
+        let final_count = beets
+            .count_entries_after(date_entry)
+            .context("counting entries with chosen date bound")?;
+        println!("Chose {date_entry:?}, which gives {final_count} entries");
     }
 
     Ok(())
 }
 
-fn select_end(entries: &[DateEntry]) -> anyhow::Result<Option<&DateEntry>> {
+fn select_end(entries: &[DateEntry], max_entries: usize) -> anyhow::Result<Option<&DateEntry>> {
     const TARGET_COUNTS: &[usize] = &[30, 50, 70];
 
     let mut target_counts = TARGET_COUNTS.to_vec();
@@ -72,7 +69,7 @@ fn select_end(entries: &[DateEntry]) -> anyhow::Result<Option<&DateEntry>> {
             })
             .collect();
 
-        match prompt_user_selection(&transitions)? {
+        match prompt_user_selection(&transitions, max_entries)? {
             Some(UserSelection::NewCounts(new_counts)) => {
                 target_counts = new_counts;
             }
@@ -88,6 +85,7 @@ enum UserSelection<'a> {
 }
 fn prompt_user_selection<'a>(
     transitions: &[Transition<'a>],
+    max_entries: usize,
 ) -> anyhow::Result<Option<UserSelection<'a>>> {
     let mut prompt = Prompt::default();
     loop {
@@ -100,14 +98,21 @@ fn prompt_user_selection<'a>(
                     prompt.read_line("Enter custom target numbers (space separated):")?;
                 match target_str
                     .split_whitespace()
-                    .map(|token| token.parse())
+                    .map(|token| {
+                        let number = token.parse()?;
+                        if number > max_entries {
+                            anyhow::bail!("{number} exceeds max_entries ({max_entries}) command-line argument")
+                        } else {
+                            Ok(number)
+                        }
+                    })
                     .collect()
                 {
                     Ok(new_counts) => {
                         return Ok(Some(UserSelection::NewCounts(new_counts)));
                     }
                     Err(err) => {
-                        println!("invalid number {target_str:?}: {err}");
+                        println!("invalid custom input {target_str:?}: {err}");
                     }
                 }
             }
@@ -200,8 +205,9 @@ impl std::fmt::Display for Transition<'_> {
             included,
             excluded,
         } = self;
-        writeln!(f, "    {}: {} {}", index, included.date, included.entry)?;
-        write!(f, "    {}: {} {}", index + 1, excluded.date, excluded.entry)
+        let count = index + 1;
+        writeln!(f, "    {}: {} {}", count, included.date, included.entry)?;
+        write!(f, "    {}: {} {}", count + 1, excluded.date, excluded.entry)
     }
 }
 
@@ -239,33 +245,118 @@ impl CheckErrors for Result<std::process::Output, std::io::Error> {
     }
 }
 
-struct BeetCommand(std::path::PathBuf);
-impl BeetCommand {
-    fn new_command(&self) -> std::process::Command {
-        std::process::Command::new(&self.0)
+mod beet_command {
+    use crate::{Args, CheckErrors as _, DateEntry};
+    use anyhow::Context as _;
+    use std::io::BufRead as _;
+
+    pub struct BeetCommand<'a> {
+        /// Path to the `beet` command from the package `beets`
+        beet_command: &'a std::path::PathBuf,
+        /// List of argument tokens that were originally comma-separated
+        ///
+        /// Example:
+        ///  - desired args "arg1" "arg2," "arg3" "arg4"
+        ///  - argument TIMELESS_ARGS="arg1\narg2,\narg3\narg4"
+        ///  - leads to this representation: &[ &["arg1", "arg2"], &["arg3", "arg4"] ]
+        timeless_filter_sets: Vec<Vec<&'a str>>,
+        /// truncates results to the specified entry count
+        max_entries: usize,
     }
+    impl<'a> TryFrom<&'a Args> for BeetCommand<'a> {
+        type Error = anyhow::Error;
 
-    fn query_current_entries(&self, current_args: String) -> anyhow::Result<Vec<DateEntry>> {
-        let current_output = self
-            .new_command()
-            .arg("list")
-            .args(current_args.lines())
-            .arg("added-")
-            .arg("--format")
-            .arg("$added $artist - $album - $title")
-            .stdout_check_errors()
-            .context("beet ls [current_args]")?;
+        fn try_from(value: &'a Args) -> anyhow::Result<Self> {
+            let Args {
+                ref beet_command,
+                ref timeless_args,
+                max_entries,
+            } = *value;
 
-        current_output
-            .lines()
-            .enumerate()
-            .take(MAX_ENTRIES)
-            .map(|(number, line)| {
-                DateEntry::try_from(line.with_context(|| {
-                    format!("line {} from current_output beet command", number + 1)
-                })?)
+            let timeless_filter_sets: anyhow::Result<Vec<Vec<_>>> = timeless_args
+                .split(',')
+                .map(|filter_set| {
+                    let elems: Vec<_> = filter_set.lines().collect();
+                    if elems.is_empty() {
+                        anyhow::bail!("duplicate commas in timeless args")
+                    } else {
+                        Ok(elems)
+                    }
+                })
+                .collect();
+
+            Ok(Self {
+                beet_command,
+                timeless_filter_sets: timeless_filter_sets?,
+                max_entries,
             })
-            .collect::<anyhow::Result<Vec<_>>>()
+        }
+    }
+    impl BeetCommand<'_> {
+        fn new_list_command(&self, extra_filter: Option<&str>) -> std::process::Command {
+            let mut command = std::process::Command::new(self.beet_command);
+            command.arg("list");
+            for (index, filter_set) in self.timeless_filter_sets.iter().enumerate() {
+                let (filter_set, last): (&[&str], &str) = if let Some(extra_filter) = extra_filter {
+                    (filter_set, extra_filter)
+                } else {
+                    let (last, rest) = filter_set.split_last().expect("nonempty filter set");
+                    (rest, last)
+                };
+                for filter_arg in filter_set {
+                    command.arg(filter_arg);
+                }
+                if index + 1 == self.timeless_filter_sets.len() {
+                    // final filter_set, no trailing comma
+                    command.arg(last);
+                } else {
+                    // filter_set will follow, append comma to last arg
+                    command.arg(&format!("{last},"));
+                }
+            }
+            command
+        }
+
+        pub fn query_timeless(&self) -> anyhow::Result<Vec<DateEntry>> {
+            let current_output = self
+                .new_list_command(None)
+                .arg("added-")
+                .arg("--format")
+                .arg("$added $artist - $album - $title")
+                .stdout_check_errors()
+                .context("beet ls [current_args]")?;
+
+            current_output
+                .lines()
+                .enumerate()
+                .take(self.max_entries)
+                .map(|(number, line)| {
+                    DateEntry::try_from(line.with_context(|| {
+                        format!("line {} from current_output beet command", number + 1)
+                    })?)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        }
+
+        pub fn count_entries_after(&self, entry: &DateEntry) -> anyhow::Result<usize> {
+            let output = self
+                .new_list_command(Some(&format!("added:{date}..", date = entry.date)))
+                .arg("--format")
+                .arg("$id")
+                .stdout_check_errors()
+                .context("beet ls [current_args] added:[selection]..")?;
+
+            output
+                .lines()
+                .enumerate()
+                .try_fold(0, |sum, (number, line)| {
+                    let line = line.with_context(|| {
+                        format!("line {} from current_output beet command", number + 1)
+                    })?;
+                    let current = if line.trim().is_empty() { 0 } else { 1 };
+                    Ok(sum + current)
+                })
+        }
     }
 }
 
