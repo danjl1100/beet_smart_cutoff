@@ -32,7 +32,12 @@
   }: let
     target_systems = [
       "x86_64-linux"
-      # "aarch64-darwin"
+      # NOTE: `beets` in nixpkgs requires NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1
+      #       run once: NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1 nix build nixpkgs#beets
+      #       and then:  ln -s $(readlink result)/bin/beet beet
+      #
+      # This flake doesn't build `beets` directly, but rather accepts the path as a runtime argument
+      "aarch64-darwin"
     ];
     arguments.parent_overlay = rust-overlay.overlays.default;
     arguments.for_package = {
