@@ -2,7 +2,8 @@ use anyhow::Context as _;
 use beet_command::BeetCommand;
 use clap::Parser;
 use std::{
-    io::{stdin, Write as _},
+    fs::File,
+    io::{stdin, BufReader, BufWriter, Write as _},
     num::NonZeroUsize,
     str::FromStr,
 };
@@ -17,25 +18,120 @@ struct Args {
     timeless_args: String,
     #[clap(long, default_value_t = 400)]
     max_entries: usize,
+    /// Output JSON file
+    #[clap(env, long)]
+    output_file: Option<std::path::PathBuf>,
+    /// Key for the output file date
+    #[clap(env, long)]
+    output_key: Option<String>,
 }
+
+type JsonMap = serde_json::Map<String, serde_json::Value>;
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let beets = BeetCommand::try_from(&args)?;
+    let ParsedArgs {
+        beets,
+        max_entries,
+        output_file_key,
+    } = {
+        let beets = BeetCommand::new(args.beet_command, &args.timeless_args, args.max_entries)?;
+        let output_file_key = match (args.output_file, args.output_key) {
+            (Some(file), Some(key)) => Some((file, key)),
+            (None, None) => None,
+            (Some(_), None) => anyhow::bail!("missing output_key for provided output_file"),
+            (None, Some(_)) => anyhow::bail!("missing output_file for provided output_key"),
+        };
+        ParsedArgs {
+            beets,
+            max_entries: args.max_entries,
+            output_file_key,
+        }
+    };
 
     let entries = beets.query_timeless().context("query current items")?;
 
-    let date_entry = select_end(&entries, args.max_entries)?;
+    let date_entry = select_end(&entries, max_entries)?;
 
-    if let Some(date_entry) = date_entry {
-        let final_count = beets
-            .count_entries_after(date_entry)
-            .context("counting entries with chosen date bound")?;
-        println!("Chose {date_entry:?}, which gives {final_count} entries");
+    let Some(date_entry) = date_entry else {
+        return Ok(());
+    };
+
+    let final_count = beets
+        .count_entries_after(date_entry)
+        .context("counting entries with chosen date bound")?;
+    println!("Chose {date_entry:?}, which gives {final_count} entries");
+
+    if let Some((output_file, output_key)) = output_file_key {
+        let mut map = read_json_file(&output_file)
+            .with_context(|| format!("reading json file {output_file:?}"))?
+            .unwrap_or_default();
+        map.insert(output_key, date_entry.date.clone().into());
+        write_json_file(&output_file, map)
+            .with_context(|| format!("writing json file {output_file:?}"))?;
     }
 
     Ok(())
 }
+
+fn read_json_file(path: impl AsRef<std::path::Path>) -> anyhow::Result<Option<JsonMap>> {
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => Err(e)?,
+    };
+    let file = BufReader::new(file);
+    let value: serde_json::Value = serde_json::from_reader(file)?;
+
+    let serde_json::Value::Object(map) = value else {
+        anyhow::bail!("unexpected JSON value: {value:?}")
+    };
+
+    let entry_count = map.len();
+    let filename = path.as_ref().display();
+    println!("Loaded {entry_count} entries from {filename}");
+
+    Ok(Some(map))
+}
+fn write_json_file(path: impl AsRef<std::path::Path>, value: JsonMap) -> anyhow::Result<()> {
+    let file = File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &value)?;
+
+    let entry_count = value.len();
+    let filename = path.as_ref().display();
+    println!("Saved {entry_count} entries to {filename}");
+
+    Ok(())
+}
+
+struct ParsedArgs<'a> {
+    beets: BeetCommand<'a>,
+    max_entries: usize,
+    output_file_key: Option<(std::path::PathBuf, String)>,
+}
+
+// impl TryFrom<Args> for ParsedArgs {
+//     type Error = anyhow::Error;
+//     fn try_from(args: Args) -> Result<Self, Self::Error> {
+//         let beets = BeetCommand::try_from(args)?;
+//         let output_file_key = match (args.output_file, args.output_key) {
+//             (Some(file), Some(key)) => Some((file, key)),
+//             (None, None) => None,
+//             (Some(_), None) => anyhow::bail!("missing output_key for provided output_file"),
+//             (None, Some(_)) => anyhow::bail!("missing output_file for provided output_key"),
+//         };
+//         Ok(ParsedArgs {
+//             beets,
+//             max_entries: args.max_entries,
+//             output_file_key,
+//         })
+//     }
+// }
 
 fn select_end(entries: &[DateEntry], max_entries: usize) -> anyhow::Result<Option<&DateEntry>> {
     const TARGET_COUNTS: &[usize] = &[30, 50, 70];
@@ -246,13 +342,13 @@ impl CheckErrors for Result<std::process::Output, std::io::Error> {
 }
 
 mod beet_command {
-    use crate::{Args, CheckErrors as _, DateEntry};
+    use crate::{CheckErrors as _, DateEntry};
     use anyhow::Context as _;
     use std::io::BufRead as _;
 
     pub struct BeetCommand<'a> {
         /// Path to the `beet` command from the package `beets`
-        beet_command: &'a std::path::PathBuf,
+        beet_command: std::path::PathBuf,
         /// List of argument tokens that were originally comma-separated
         ///
         /// Example:
@@ -263,16 +359,12 @@ mod beet_command {
         /// truncates results to the specified entry count
         max_entries: usize,
     }
-    impl<'a> TryFrom<&'a Args> for BeetCommand<'a> {
-        type Error = anyhow::Error;
-
-        fn try_from(value: &'a Args) -> anyhow::Result<Self> {
-            let Args {
-                ref beet_command,
-                ref timeless_args,
-                max_entries,
-            } = *value;
-
+    impl BeetCommand<'_> {
+        pub fn new(
+            beet_command: std::path::PathBuf,
+            timeless_args: &str,
+            max_entries: usize,
+        ) -> anyhow::Result<BeetCommand<'_>> {
             let timeless_filter_sets: anyhow::Result<Vec<Vec<_>>> = timeless_args
                 .split(',')
                 .map(|filter_set| {
@@ -285,7 +377,7 @@ mod beet_command {
                 })
                 .collect();
 
-            Ok(Self {
+            Ok(BeetCommand {
                 beet_command,
                 timeless_filter_sets: timeless_filter_sets?,
                 max_entries,
@@ -294,7 +386,7 @@ mod beet_command {
     }
     impl BeetCommand<'_> {
         fn new_list_command(&self, extra_filter: Option<&str>) -> std::process::Command {
-            let mut command = std::process::Command::new(self.beet_command);
+            let mut command = std::process::Command::new(&self.beet_command);
             command.arg("list");
             for (index, filter_set) in self.timeless_filter_sets.iter().enumerate() {
                 let (filter_set, last): (&[&str], &str) = if let Some(extra_filter) = extra_filter {
