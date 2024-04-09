@@ -45,6 +45,14 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    let json_file_key = if let Some((output_file, output_key)) = output_file_key {
+        // fail-fast if file cannot be read
+        let json_file = json::read_json_file(output_file).context("reading json file")?;
+        Some((json_file, output_key))
+    } else {
+        None
+    };
+
     let entries = beets.query_timeless().context("query current items")?;
 
     let date_entry = select_end(&entries, max_entries)?;
@@ -58,13 +66,13 @@ fn main() -> anyhow::Result<()> {
         .context("counting entries with chosen date bound")?;
     println!("Chose {date_entry:?}, which gives {final_count} entries");
 
-    if let Some((output_file, output_key)) = output_file_key {
-        let mut map = json::read_json_file(&output_file)
-            .with_context(|| format!("reading json file {output_file:?}"))?
-            .unwrap_or_default();
-        map.insert(output_key, date_entry.date.clone().into());
-        json::write_json_file(&output_file, map)
-            .with_context(|| format!("writing json file {output_file:?}"))?;
+    if let Some((json_file, key)) = json_file_key {
+        let json::JsonFile { map, path } = json_file;
+        let path = &path;
+        let mut map = map.unwrap_or_default();
+
+        map.insert(key, date_entry.date.clone().into());
+        json::write_json_file(path, map).with_context(|| format!("writing json file {path:?}"))?;
     }
 
     Ok(())
@@ -75,12 +83,19 @@ mod json {
     use std::{
         fs::File,
         io::{BufReader, BufWriter},
-        path::Path,
+        path::{Path, PathBuf},
     };
-    pub fn read_json_file(path: impl AsRef<Path>) -> anyhow::Result<Option<JsonMap>> {
+
+    pub struct JsonFile {
+        pub map: Option<JsonMap>,
+        pub path: PathBuf,
+    }
+    pub fn read_json_file(path: PathBuf) -> anyhow::Result<JsonFile> {
         let file = match File::open(&path) {
             Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(JsonFile { map: None, path })
+            }
             Err(e) => Err(e)?,
         };
         let file = BufReader::new(file);
@@ -91,10 +106,13 @@ mod json {
         };
 
         let entry_count = map.len();
-        let filename = path.as_ref().display();
+        let filename = path.display();
         println!("Loaded {entry_count} entries from {filename}");
 
-        Ok(Some(map))
+        Ok(JsonFile {
+            map: Some(map),
+            path,
+        })
     }
     pub fn write_json_file(path: impl AsRef<Path>, value: JsonMap) -> anyhow::Result<()> {
         let file = File::options()
