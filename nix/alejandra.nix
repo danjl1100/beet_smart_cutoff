@@ -7,7 +7,7 @@
     nix-alejandra = stdenvNoCC.mkDerivation {
       name = "nix-alejandra";
       src = lib.cleanSourceWith {
-        src = ./.;
+        src = ./..;
         filter = path: type: ((type == "directory") || (lib.hasSuffix ".nix" path));
       };
       phases = ["buildPhase"];
