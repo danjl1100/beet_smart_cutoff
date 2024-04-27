@@ -44,31 +44,35 @@ impl BeetCommand<'_> {
     fn new_list_command(&self, extra_filter: Option<&str>) -> std::process::Command {
         let mut command = std::process::Command::new(&self.beet_command);
         command.arg("list");
-        match extra_filter {
-            Some(extra_filter) if self.timeless_filter_sets.is_empty() => {
-                command.arg(extra_filter);
+
+        // add timeless_args with extra_filter (if any) added to each clause
+        let mut prev_arg = None;
+        for filter_set in &self.timeless_filter_sets {
+            if let Some(prev_arg) = prev_arg {
+                // filter_set will follow, append comma to last arg
+                command.arg(&format!("{prev_arg},"));
             }
-            _ => {
-                for (index, filter_set) in self.timeless_filter_sets.iter().enumerate() {
-                    let (filter_set, last): (&[&str], &str) = if let Some(extra_filter) =
-                        extra_filter
-                    {
-                        (filter_set, extra_filter)
-                    } else {
-                        let (last, rest) = filter_set.split_last().expect("nonempty filter set");
-                        (rest, last)
-                    };
-                    for filter_arg in filter_set {
-                        command.arg(filter_arg);
-                    }
-                    if index + 1 == self.timeless_filter_sets.len() {
-                        // final filter_set, no trailing comma
-                        command.arg(last);
-                    } else {
-                        // filter_set will follow, append comma to last arg
-                        command.arg(&format!("{last},"));
-                    }
-                }
+
+            let (filter_set, last): (&[&str], &str) = if let Some(extra_filter) = extra_filter {
+                (filter_set, extra_filter)
+            } else {
+                let (last, rest) = filter_set.split_last().expect("nonempty filter set");
+                (rest, last)
+            };
+            for filter_arg in filter_set {
+                command.arg(filter_arg);
+            }
+            // defer the "last" arg, to append comma if more arguments follow
+            prev_arg = Some(last);
+        }
+        if let Some(prev_arg) = prev_arg {
+            // final filter_set, no trailing comma
+            command.arg(prev_arg);
+        } else {
+            // no timeless_args
+            if let Some(extra_filter) = extra_filter {
+                // only filter is the extra_filter, so add it
+                command.arg(extra_filter);
             }
         }
         command
