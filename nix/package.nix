@@ -22,14 +22,18 @@
   crate = pkgs.callPackage ./crate.nix {
     inherit system advisory-db craneLib;
     src = let
-      htmlFilter = path: _type: builtins.match ".*html$" path != null;
-      txtFilter = path: _type: builtins.match ".*txt$" path != null;
-      htmlOrTxtOrCargo = path: type:
-        (htmlFilter path type) || (txtFilter path type) || (craneLib.filterCargoSources path type);
+      extFilter = path: _type:
+        builtins.any (ext: builtins.match ".*${ext}$" path != null) [
+          "html"
+          "snap"
+          "txt"
+        ];
+      extsOrCargo = path: type:
+        (extFilter path type) || (craneLib.filterCargoSources path type);
     in
       pkgs.lib.cleanSourceWith {
         src = craneLib.path ./..;
-        filter = htmlOrTxtOrCargo;
+        filter = extsOrCargo;
       };
     extraBuildArgs = {
       installPhaseCommand = installOnlyBin crate-name;
