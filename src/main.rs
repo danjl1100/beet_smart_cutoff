@@ -46,10 +46,10 @@ fn main() -> anyhow::Result<()> {
 
     let subtitle = output_file_key
         .as_ref()
-        .map(|(_, key)| format!("- key {key:?}"))
+        .map(|(_, key)| format!(" - key {key:?}"))
         .unwrap_or_default();
     println!("## ");
-    println!("## beet_smart_cutoff {subtitle}");
+    println!("## beet_smart_cutoff{subtitle}");
     println!("## ");
 
     let json_file_key = if let Some((output_file, output_key)) = output_file_key {
@@ -71,7 +71,8 @@ fn main() -> anyhow::Result<()> {
     let final_count = beets
         .count_entries_after(date_entry)
         .context("counting entries with chosen date bound")?;
-    println!("Chose {date_entry:?}, which gives {final_count} entries");
+    // FIXME debug format is tacky
+    println!("Final {final_count} entries, from choice {date_entry:?}");
 
     if let Some((json_file, key)) = json_file_key {
         let json::JsonFile { map, path } = json_file;

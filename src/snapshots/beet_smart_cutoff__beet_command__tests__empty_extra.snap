@@ -1,0 +1,8 @@
+---
+source: src/beet_command.rs
+expression: "beet_list_command(\"\", extra)"
+---
+[
+  "list",
+  "extra",
+]

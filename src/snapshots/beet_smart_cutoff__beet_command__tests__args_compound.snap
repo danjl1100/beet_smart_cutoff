@@ -1,0 +1,14 @@
+---
+source: src/beet_command.rs
+expression: "beet_list_command(\"a\\nb\\nc,d\\ne,f\\ng\", None)"
+---
+[
+  "list",
+  "a",
+  "b",
+  "c,",
+  "d",
+  "e,",
+  "f",
+  "g",
+]

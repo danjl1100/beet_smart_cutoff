@@ -1,0 +1,11 @@
+---
+source: src/beet_command.rs
+expression: "beet_list_command(\"a\\nb\\nc\", extra)"
+---
+[
+  "list",
+  "a",
+  "b",
+  "c",
+  "extra",
+]

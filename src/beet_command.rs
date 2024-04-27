@@ -44,22 +44,31 @@ impl BeetCommand<'_> {
     fn new_list_command(&self, extra_filter: Option<&str>) -> std::process::Command {
         let mut command = std::process::Command::new(&self.beet_command);
         command.arg("list");
-        for (index, filter_set) in self.timeless_filter_sets.iter().enumerate() {
-            let (filter_set, last): (&[&str], &str) = if let Some(extra_filter) = extra_filter {
-                (filter_set, extra_filter)
-            } else {
-                let (last, rest) = filter_set.split_last().expect("nonempty filter set");
-                (rest, last)
-            };
-            for filter_arg in filter_set {
-                command.arg(filter_arg);
+        match extra_filter {
+            Some(extra_filter) if self.timeless_filter_sets.is_empty() => {
+                command.arg(extra_filter);
             }
-            if index + 1 == self.timeless_filter_sets.len() {
-                // final filter_set, no trailing comma
-                command.arg(last);
-            } else {
-                // filter_set will follow, append comma to last arg
-                command.arg(&format!("{last},"));
+            _ => {
+                for (index, filter_set) in self.timeless_filter_sets.iter().enumerate() {
+                    let (filter_set, last): (&[&str], &str) = if let Some(extra_filter) =
+                        extra_filter
+                    {
+                        (filter_set, extra_filter)
+                    } else {
+                        let (last, rest) = filter_set.split_last().expect("nonempty filter set");
+                        (rest, last)
+                    };
+                    for filter_arg in filter_set {
+                        command.arg(filter_arg);
+                    }
+                    if index + 1 == self.timeless_filter_sets.len() {
+                        // final filter_set, no trailing comma
+                        command.arg(last);
+                    } else {
+                        // filter_set will follow, append comma to last arg
+                        command.arg(&format!("{last},"));
+                    }
+                }
             }
         }
         command
@@ -138,5 +147,42 @@ impl CheckErrors for Result<std::process::Output, std::io::Error> {
         }
 
         Ok(stdout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn beet_list_command(timeless_args: &str, extra_filter: Option<&str>) -> Vec<String> {
+        let beet_command = PathBuf::from("beet");
+        let max_entries = 0;
+        let command = BeetCommand::new(beet_command, timeless_args, max_entries)
+            .new_list_command(extra_filter);
+        command
+            .get_args()
+            .map(|os_str| os_str.to_str().expect("valid utf8 in test case").to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn beet_command_filter_args() {
+        insta::assert_ron_snapshot!("empty", beet_list_command("", None));
+        insta::assert_ron_snapshot!("args_simple", beet_list_command("a\nb\nc", None));
+        insta::assert_ron_snapshot!(
+            "args_compound",
+            beet_list_command("a\nb\nc,d\ne,f\ng", None)
+        );
+
+        //
+
+        let extra = Some("extra");
+        insta::assert_ron_snapshot!("empty_extra", beet_list_command("", extra));
+        insta::assert_ron_snapshot!("args_simple_extra", beet_list_command("a\nb\nc", extra));
+        insta::assert_ron_snapshot!(
+            "args_compound_extra",
+            beet_list_command("a\nb\nc,d\ne,f\ng", extra)
+        );
     }
 }

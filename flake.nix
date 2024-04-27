@@ -85,6 +85,8 @@
               pkgs.alejandra
               pkgs.bacon
               pkgs.cargo-expand
+              pkgs.cargo-insta
+              pkgs.cargo-mutants
             ];
           };
         };
