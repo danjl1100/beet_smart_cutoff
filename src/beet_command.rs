@@ -20,24 +20,24 @@ impl BeetCommand<'_> {
         beet_command: std::path::PathBuf,
         timeless_args: &str,
         max_entries: usize,
-    ) -> anyhow::Result<BeetCommand<'_>> {
-        let timeless_filter_sets: anyhow::Result<Vec<Vec<_>>> = timeless_args
+    ) -> BeetCommand<'_> {
+        let timeless_filter_sets: Vec<Vec<_>> = timeless_args
             .split(',')
-            .map(|filter_set| {
+            .filter_map(|filter_set| {
                 let elems: Vec<_> = filter_set.lines().collect();
                 if elems.is_empty() {
-                    anyhow::bail!("duplicate commas in timeless args")
+                    None
                 } else {
-                    Ok(elems)
+                    Some(elems)
                 }
             })
             .collect();
 
-        Ok(BeetCommand {
+        BeetCommand {
             beet_command,
-            timeless_filter_sets: timeless_filter_sets?,
+            timeless_filter_sets,
             max_entries,
-        })
+        }
     }
 }
 impl BeetCommand<'_> {

@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         max_entries,
         output_file_key,
     } = {
-        let beets = BeetCommand::new(args.beet_command, &args.timeless_args, args.max_entries)?;
+        let beets = BeetCommand::new(args.beet_command, &args.timeless_args, args.max_entries);
         let output_file_key = match (args.output_file, args.output_key) {
             (Some(file), Some(key)) => Some((file, key)),
             (None, None) => None,
